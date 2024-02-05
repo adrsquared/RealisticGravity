@@ -262,12 +262,14 @@ namespace RealisticGravity
                     }
 
                     grids = new HashSet<IMyEntity>(gridTerminalSystemDictionary.Values);
+                    MyVisualScriptLogicProvider.ShowNotification($"GRIDS: {grids.Count}", 300);
 
                     int num;
                     var toRemoveWhitelist = new HashSet<IMyEntity>(gridDataTable.Keys);
                     foreach (var grid in grids)
                     {
                         PlanetManager.GravityPlanetData planetData = PlanetManager.Instance.GetNearestPlanet(grid.PositionComp.GetPosition(), out num);
+                        MyVisualScriptLogicProvider.ShowNotification($"PLANET: {num}", 3000);
                         if (planetData != null && num == 1)
                         {
                             //MyVisualScriptLogicProvider.ShowNotification($"PLANET: {(grid as IMyCubeGrid).CustomName} : {planet}", 300);

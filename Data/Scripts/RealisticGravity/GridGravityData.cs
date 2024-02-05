@@ -243,7 +243,7 @@ namespace RealisticGravity
             clientData.velocity = grid.Physics.LinearVelocity;
 
             // DS
-            if (MyAPIGateway.Session.Player == null) return true;
+            if (MyAPIGateway.Utilities.IsDedicated) return true;
 
             bool showPath = showPathsToggle != RealisticGravityCore.HIDE_ORBIT_PATHS && !noShow && (playerPos - planetPos).LengthSquared() < RealisticGravityCore.GridOrbitPathMaxDrawDistanceSqr && vSqr > 625F;
 

@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using VRage.Game;
+using VRage.Game.Components.Interfaces;
 using VRage.ModAPI;
 using VRage.Utils;
 using VRageMath;
@@ -27,21 +28,41 @@ namespace RealisticGravity
 		{
 			public MyPlanet planet;
 			public bool isValid;
-			public readonly float gravityStrength;
-			public readonly double gravityConst;
-			public readonly double gravityHeightSurfSqr;
-			public readonly double gravityHeightMinSqr;
-			public readonly double gravityHeightMaxSqr;
-			public readonly float minRenderDistSqr;
+			public float gravityStrength;
+			public double gravityConst;
+			public double gravityHeightSurfSqr;
+			public double gravityHeightMinSqr;
+			public double gravityHeightMaxSqr;
+			public float minRenderDistSqr;
 
 			public GravityPlanetData(MyPlanet planet)
 			{
 				this.planet = planet;
 				var builder = planet.GetObjectBuilder() as MyObjectBuilder_Planet;
-				gravityStrength = builder.SurfaceGravity;
-				gravityHeightSurfSqr = planet.MinimumRadius * planet.MinimumRadius;
-				gravityHeightMinSqr = planet.MaximumRadius * planet.MaximumRadius;
-				if (Math.Abs(builder.GravityFalloff - 2F) < 0.0001F)
+				SetValues(builder.SurfaceGravity, builder.GravityFalloff, planet.MinimumRadius, planet.MaximumRadius);
+
+				var val = GuidsManager.GetStorageValue(planet, GuidsManager.STAR_GRAVITY_DATA);
+				if (val != null) // Special handling for Real Stars
+				{
+					//MyLog.Default.WriteLineAndConsole($"DATA: {val}");
+					var tokens = val.Split(',');
+					if (tokens.Length == 3)
+					{
+						float gStr, gFalloff, minHeight;
+						if (float.TryParse(tokens[0], out gStr) && float.TryParse(tokens[1], out gFalloff) && float.TryParse(tokens[2], out minHeight))
+						{
+							SetValues(gStr, gFalloff, minHeight * 0.99f, minHeight);
+						}
+					}
+				}
+			}
+
+			private void SetValues(float gravityStr, float gravityFalloff, float surfHeight, float minHeight)
+			{
+				gravityStrength = gravityStr;
+				gravityHeightSurfSqr = surfHeight * surfHeight;
+				gravityHeightMinSqr = minHeight * minHeight;
+				if (Math.Abs(gravityFalloff - 2F) < 0.0001F)
 				{
 					isValid = true;
 					gravityConst = 9.8 * gravityStrength * gravityHeightMinSqr;
@@ -50,8 +71,8 @@ namespace RealisticGravity
 				else
 				{
 					isValid = false;
-					gravityConst = 9.8 * gravityStrength * Math.Pow(gravityHeightMinSqr, builder.GravityFalloff / 2);
-					gravityHeightMaxSqr = Math.Pow(gravityConst / (9.8 * 0.05), 2 / builder.GravityFalloff);
+					gravityConst = 9.8 * gravityStrength * Math.Pow(gravityHeightMinSqr, gravityFalloff / 2);
+					gravityHeightMaxSqr = Math.Pow(gravityConst / (9.8 * 0.05), 2 / gravityFalloff);
 					//MyAPIGateway.Utilities.ShowNotification($"PLANET: {gravityConst} : {gravityHeightMaxSqr}", 50000, MyFontEnum.Green);
 				}
 				minRenderDistSqr = (float)gravityHeightMinSqr * 0.5F;
