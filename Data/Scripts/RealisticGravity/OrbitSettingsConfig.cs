@@ -13,9 +13,9 @@ namespace RealisticGravity
         [ProtoMember(3)]
         public float CharacterGravityMultiplier = 2F;
         [ProtoMember(4)]
-        public bool PreventGridStopping = true;
+        public bool OverridePlanetGravityFalloff = true;
         [ProtoMember(5)]
-        public bool OverrideCreatedPlanetGravityFalloff = true;
+        public bool EnforceSingleGravityWell = true;
         [ProtoMember(6)]
         public bool ShowCharacterOrbitInfo = false;
         [ProtoMember(7)]

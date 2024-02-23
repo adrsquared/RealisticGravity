@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using System.Text;
 using VRage.Game;
 using VRage.Game.Components.Interfaces;
+using VRage.Game.ModAPI;
 using VRage.ModAPI;
 using VRage.Utils;
 using VRageMath;
@@ -32,6 +33,7 @@ namespace RealisticGravity
 			public double gravityConst;
 			public double gravityHeightSurfSqr;
 			public double gravityHeightMinSqr;
+			public double gravityHeightMax;
 			public double gravityHeightMaxSqr;
 			public float minRenderDistSqr;
 
@@ -39,7 +41,16 @@ namespace RealisticGravity
 			{
 				this.planet = planet;
 				var builder = planet.GetObjectBuilder() as MyObjectBuilder_Planet;
-				SetValues(builder.SurfaceGravity, builder.GravityFalloff, planet.MinimumRadius, planet.MaximumRadius);
+				float gravFalloff = builder.GravityFalloff;
+
+				if (RealisticGravityCore.ConfigData.OverridePlanetGravityFalloff && planet.Components.Get<MyGravityProviderComponent>() is IMySphericalNaturalGravityComponent)
+				{
+					var gComp = (planet.Components.Get<MyGravityProviderComponent>() as IMySphericalNaturalGravityComponent);
+					gComp.Falloff = 2f;
+					gravFalloff = 2f;
+				}
+
+				SetValues(builder.SurfaceGravity, gravFalloff, planet.MinimumRadius, planet.MaximumRadius);
 
 				var val = GuidsManager.GetStorageValue(planet, GuidsManager.STAR_GRAVITY_DATA);
 				if (val != null) // Special handling for Real Stars
@@ -62,6 +73,7 @@ namespace RealisticGravity
 				gravityStrength = gravityStr;
 				gravityHeightSurfSqr = surfHeight * surfHeight;
 				gravityHeightMinSqr = minHeight * minHeight;
+
 				if (Math.Abs(gravityFalloff - 2F) < 0.0001F)
 				{
 					isValid = true;
@@ -75,6 +87,7 @@ namespace RealisticGravity
 					gravityHeightMaxSqr = Math.Pow(gravityConst / (9.8 * 0.05), 2 / gravityFalloff);
 					//MyAPIGateway.Utilities.ShowNotification($"PLANET: {gravityConst} : {gravityHeightMaxSqr}", 50000, MyFontEnum.Green);
 				}
+				gravityHeightMax = (float)Math.Sqrt(gravityHeightMaxSqr);
 				minRenderDistSqr = (float)gravityHeightMinSqr * 0.5F;
 			}
 		}
@@ -86,14 +99,14 @@ namespace RealisticGravity
 			MyAPIGateway.Entities.OnEntityAdd += OnEntityAdd;
 			MyAPIGateway.Entities.OnEntityRemove += OnEntityRemove;
 
-			if (RealisticGravityCore.ConfigData.OverrideCreatedPlanetGravityFalloff)
+			/*if (RealisticGravityCore.ConfigData.OverrideCreatedPlanetGravityFalloff)
 			{
 				var defs = MyDefinitionManager.Static.GetPlanetsGeneratorsDefinitions();
 				foreach (var def in defs)
 				{
 					def.GravityFalloffPower = 2F;
 				}
-			}
+			}*/
 			
 			// Track Planets
 			List<IMyVoxelBase> voxelMaps = new List<IMyVoxelBase>();

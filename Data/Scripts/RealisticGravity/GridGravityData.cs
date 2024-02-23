@@ -26,12 +26,20 @@ namespace RealisticGravity
         public IMyCubeGrid grid;
         public PlanetManager.GravityPlanetData nearestPlanetData;
         private Vector3D planetPos;
-        public Vector3 prevLinearVelocity;
         public IMyFaction faction;
         private Vector4 relationColor;
         private bool noShow;
         private IMyGps gps;
 
+        private float camDist = float.MaxValue;
+        private float angleOffset;
+        private bool hasHighDetail;
+        private int firstHighDetailIndex = -1;
+        private int secondHighDetailIndex = -1;
+        private Vector3[] orbitHighDetailPoints = new Vector3[DIVISIONS * 2 + 1];
+        private float highDetailScaleFactor;
+
+        private float[] orbitAngles = new float[DIVISIONS];
         private Vector3[] orbitPoints = new Vector3[DIVISIONS];
         private Vector3[] orbitMidPoints = new Vector3[DIVISIONS];
         private bool[] orbitPointsFlags = new bool[DIVISIONS];
@@ -44,7 +52,6 @@ namespace RealisticGravity
             this.grid = grid;
             this.nearestPlanetData = planetData;
             planetPos = planetData.planet.PositionComp.GetPosition();
-            prevLinearVelocity = grid.Physics != null ? grid.Physics.LinearVelocity : Vector3.Zero;
 
             UpdateFaction();
             SetRelation();
@@ -77,7 +84,6 @@ namespace RealisticGravity
             this.grid = grid;
             this.nearestPlanetData = planetData;
             this.planetPos = planetData.planet.PositionComp.GetPosition();
-            prevLinearVelocity = grid.Physics != null ? grid.Physics.LinearVelocity : Vector3.Zero;
             this.faction = faction;
 
             SetRelation();
@@ -211,7 +217,7 @@ namespace RealisticGravity
             }
         }
 
-        public bool Update(ref Vector3 playerPos, ref IMyControllableEntity controlledEntity, int showPathsToggle, ref GridGravityDataClient clientData)
+        public bool Update(ref Vector3 camPos, ref IMyControllableEntity controlledEntity, int showPathsToggle, ref GridGravityDataClient clientData)
         {
             if (grid == null || grid.Physics == null || grid.IsStatic || nearestPlanetData == null)
             {
@@ -225,13 +231,6 @@ namespace RealisticGravity
             if (MyAPIGateway.Session.IsServer)
             {
                 grid.Physics.Gravity = Vector3.Normalize(-r) * (float)(nearestPlanetData.gravityConst / r.LengthSquared());
-                
-                if (RealisticGravityCore.ConfigData.PreventGridStopping && grid.Physics.LinearVelocity.LengthSquared() <= 0.01 && prevLinearVelocity.LengthSquared() > 25.0)
-                {
-                    grid.Physics.LinearVelocity = prevLinearVelocity;
-                }
-
-                prevLinearVelocity = grid.Physics.LinearVelocity;
             }
 
             clientData.gridName = grid.CustomName;
@@ -245,7 +244,7 @@ namespace RealisticGravity
             // DS
             if (MyAPIGateway.Utilities.IsDedicated) return true;
 
-            bool showPath = showPathsToggle != RealisticGravityCore.HIDE_ORBIT_PATHS && !noShow && (playerPos - planetPos).LengthSquared() < RealisticGravityCore.GridOrbitPathMaxDrawDistanceSqr && vSqr > 625F;
+            bool showPath = showPathsToggle != RealisticGravityCore.HIDE_ORBIT_PATHS && !noShow && ((camPos - planetPos).Length() - nearestPlanetData.gravityHeightMax) < RealisticGravityCore.ConfigData.GridOrbitPathMaxDrawDistance && vSqr > 625F;
 
             if (RealisticGravityCore.ConfigData.ShowGridOrbitGps && showPath)
             {
@@ -259,26 +258,132 @@ namespace RealisticGravity
             if (RealisticGravityCore.ConfigData.ShowGridOrbitPath)
             {
                 bool isControlled = (controlledEntity is IMyCubeBlock) && grid == (controlledEntity as IMyCubeBlock).CubeGrid;
-
+                
                 if (isControlled || updateFlag)
                 {
                     float mu = (float)nearestPlanetData.gravityConst;
                     Vector3 planeNormal = Vector3.Cross(r, v);
                     Vector3 e = Vector3.Cross(v, planeNormal) / mu - Vector3.Normalize(r);
                     float eLength = e.Length();
+                    Vector3 eNorm = e / eLength;
 
                     float semimajorAxis = -mu / (vSqr - (2 * mu / r.Length()));
-                    Vector3 center = nearestPlanetData.planet.PositionComp.GetPosition() - (e * semimajorAxis), lVect = Vector3.Normalize(e) * semimajorAxis, sVect = Vector3.Normalize(Vector3.Cross(lVect, planeNormal)) * (float)Math.Sqrt(semimajorAxis * semimajorAxis * (1 - e.LengthSquared()));
+                    float semiminorAxis = (float)Math.Sqrt(semimajorAxis * semimajorAxis * (1 - e.LengthSquared()));
+                    Vector3 center = nearestPlanetData.planet.PositionComp.GetPosition() - (e * semimajorAxis), lVect = eNorm * semimajorAxis, sVect = Vector3.Normalize(Vector3.Cross(lVect, planeNormal)) * semiminorAxis;
+                    
+                    highDetailScaleFactor = (float)Math.Pow(Math.Sqrt(semimajorAxis * semiminorAxis), 0.707) * 4f;
 
                     clientData.center = center;
                     clientData.lVect = lVect;
                     clientData.sVect = sVect;
+                    clientData.eVect = e;
+                    clientData.planeNormal = Vector3D.Normalize(planeNormal);
+                    clientData.highDetailScaleFactor = highDetailScaleFactor;
+
+                    planeNormal.Normalize();
+
+                    angleOffset = 0f;
+                    float camDistSqr = float.MaxValue;
+                    if (showPath && showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL)
+                    {
+                        var camOffset = Vector3D.Normalize(camPos - center);
+
+                        angleOffset = (float)Math.Atan2(camOffset.X * eNorm.Y * planeNormal.Z + eNorm.X * planeNormal.Y * camOffset.Z + planeNormal.X * camOffset.Y * eNorm.Z - camOffset.Z * eNorm.Y * planeNormal.X - eNorm.Z * planeNormal.Y * camOffset.X - planeNormal.Z * camOffset.Y * eNorm.X, Vector3D.Dot(camOffset, eNorm));
+
+                        angleOffset = (float)Math.Atan2(semimajorAxis * Math.Sin(angleOffset), semiminorAxis * Math.Cos(angleOffset));
+
+                        if (angleOffset < 0f) angleOffset += (float)Math.PI * 2;
+
+                        var camNearPt = center + (float)Math.Sin(angleOffset) * sVect + (float)Math.Cos(angleOffset) * lVect;
+
+                        //MathHelpers.DrawSphere(MatrixD.CreateTranslation(camNearPt), (float)(camPos - camNearPt).Length() * 0.01f + 20f, Color.Blue);
+
+                        camDistSqr = (float)(camPos - camNearPt).LengthSquared();
+                        camDist = (float)Math.Sqrt(camDistSqr);
+
+                        //if (isControlled)
+                        //    MyAPIGateway.Utilities.ShowNotification($"DIST: {(int)camDistSqr} : {(int)(angleOffset * (180 / Math.PI))} : {e.Length()} : {semimajorAxis}", 5);
+
+                        if (float.IsNaN(angleOffset))
+                        {
+                            angleOffset = 0f;
+                            camDistSqr = float.MaxValue;
+                            camDist = float.MaxValue;
+                        }
+                    }
 
                     double weight = eLength * eLength * 0.15;
                     for (int i = 0; i < DIVISIONS; ++i)
                     {
                         double theta = -Math.Sin(angleList[i]) * Math.Sign(Math.Cos(angleList[i])) * weight + angleList[i];
+                        orbitAngles[i] = (float)theta;
                         orbitPoints[i] = center + (float)Math.Sin(theta) * sVect + (float)Math.Cos(theta) * lVect;
+                    }
+
+                    hasHighDetail = showPath && camDistSqr < nearestPlanetData.minRenderDistSqr;
+                    firstHighDetailIndex = -1;
+                    secondHighDetailIndex = -1;
+                    if (hasHighDetail)
+                    {
+                        for (int i = 0; i < DIVISIONS - 1; ++i)
+                        {
+                            if (angleOffset < orbitAngles[i + 1])
+                            {
+                                firstHighDetailIndex = i;
+                                if (angleOffset < (orbitAngles[i] + orbitAngles[i + 1]) * 0.5f)
+                                {
+                                    firstHighDetailIndex = (i - 1 + DIVISIONS) % DIVISIONS;
+                                    secondHighDetailIndex = i;
+                                }
+                                else
+                                {
+                                    firstHighDetailIndex = i;
+                                    secondHighDetailIndex = (i + 1) % DIVISIONS;
+                                }
+                                break;
+                            }
+                        }
+
+                        if (firstHighDetailIndex == -1)
+                        {
+                            if (angleOffset > (6.28318f + orbitAngles[DIVISIONS - 1]) * 0.5f)
+                            {
+                                firstHighDetailIndex = DIVISIONS - 1;
+                                secondHighDetailIndex = 0;
+                            }
+                            else
+                            {
+                                firstHighDetailIndex = DIVISIONS - 2;
+                                secondHighDetailIndex = DIVISIONS - 1;
+                            }
+                        }
+
+                        int thirdHighDetailIndex = (secondHighDetailIndex + 1) % DIVISIONS;
+                        orbitHighDetailPoints[0] = orbitPoints[firstHighDetailIndex];
+
+                        float firstAngle = orbitAngles[firstHighDetailIndex], secondAngle = orbitAngles[secondHighDetailIndex], thirdAngle = orbitAngles[thirdHighDetailIndex];
+                        if (secondHighDetailIndex == 0)
+                            firstAngle -= MathHelpers.PI_2;
+                        if (thirdHighDetailIndex == 0)
+                            thirdAngle += MathHelpers.PI_2;
+
+                        for (int i = 1; i < DIVISIONS; ++i)
+                        {
+                            float angle = MathHelpers.MapRange((float)i / DIVISIONS, 0f, 1f, firstAngle, secondAngle);
+                            orbitHighDetailPoints[i] = center + (float)Math.Sin(angle) * sVect + (float)Math.Cos(angle) * lVect;
+                        }
+
+                        orbitHighDetailPoints[DIVISIONS] = orbitPoints[secondHighDetailIndex];
+
+                        for (int i = 1; i < DIVISIONS; ++i)
+                        {
+                            float angle = MathHelpers.MapRange((float)i / DIVISIONS, 0f, 1f, secondAngle, thirdAngle);
+                            orbitHighDetailPoints[i + DIVISIONS] = center + (float)Math.Sin(angle) * sVect + (float)Math.Cos(angle) * lVect;
+                        }
+
+                        orbitHighDetailPoints[DIVISIONS * 2] = orbitPoints[thirdHighDetailIndex];
+
+                        //MyAPIGateway.Utilities.ShowNotification($"DETAIL: {firstHighDetailIndex}/{secondHighDetailIndex}/{thirdHighDetailIndex} {angleOffset} : {orbitAngles[0]} : {orbitAngles[10]} : {orbitAngles[20]}", 5);
                     }
 
                     for (int i = 0; i < DIVISIONS; ++i)
@@ -294,10 +399,44 @@ namespace RealisticGravity
                 if (showPath)
                 {
                     Vector4 color = isControlled ? RealisticGravityCore.ColorMyOrbitPath : relationColor;
-                    for (int i = 0; i < DIVISIONS; ++i)
+                    if (showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL)
                     {
-                        if (orbitPointsFlags[i])
-                            MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % DIVISIONS], weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                        if (hasHighDetail)
+                        {
+                            //float scaleFactor = (float)Math.Sqrt(clientData.sVect.Length() * clientData.lVect.Length());
+                            var detailLineThickness = (camDist + highDetailScaleFactor) * 0.001F * RealisticGravityCore.ConfigData.OrbitPathLineThickness;
+                            for (int i = 0; i < DIVISIONS; ++i)
+                            {
+                                if (i == firstHighDetailIndex)
+                                {
+                                    for (int j = 0; j < orbitHighDetailPoints.Length - 1; ++j)
+                                    {
+                                        MySimpleObjectDraw.DrawLine(orbitHighDetailPoints[j], orbitHighDetailPoints[j + 1], weaponLaserId, ref color, detailLineThickness, BlendTypeEnum.PostPP);
+                                    }
+                                }
+                                else if (i != secondHighDetailIndex && orbitPointsFlags[i])
+                                {
+                                    MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % DIVISIONS], weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                                }
+                            }
+                            //MyAPIGateway.Utilities.ShowNotification($"SCALE: {highDetailScaleFactor}", 5);
+                        }
+                        else
+                        {
+                            for (int i = 0; i < DIVISIONS; ++i)
+                            {
+                                if (orbitPointsFlags[i])
+                                    MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % DIVISIONS], weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < DIVISIONS; ++i)
+                        {
+                            if (orbitPointsFlags[i])
+                                MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % DIVISIONS], weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                        }
                     }
                 }
             }
@@ -308,11 +447,11 @@ namespace RealisticGravity
         {
             if (nearestPlanetData != null)
             {
-                Vector3 charPos = MyAPIGateway.Session.Player.Character != null ? MyAPIGateway.Session.Player.Character.GetPosition() : Vector3D.Zero;
+                Vector3 camPos = MyAPIGateway.Session.Camera != null ? MyAPIGateway.Session.Camera.WorldMatrix.Translation : Vector3D.Zero;
                 Vector3D planetPos = nearestPlanetData.planet.PositionComp.GetPosition();
                 for (int i = 0; i < DIVISIONS; ++i)
                 {
-                    float dSqr = (orbitMidPoints[i] - charPos).LengthSquared(), dSqrPlanet = (float)(orbitMidPoints[i] - planetPos).LengthSquared();
+                    float dSqr = (orbitMidPoints[i] - camPos).LengthSquared(), dSqrPlanet = (float)(orbitMidPoints[i] - planetPos).LengthSquared();
                     orbitPointsFlags[i] = (showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL || dSqr > nearestPlanetData.minRenderDistSqr) && dSqrPlanet < nearestPlanetData.gravityHeightMaxSqr;
                     orbitPointsLineThicknesses[i] = ((float)Math.Sqrt(dSqr)) * 0.001F * RealisticGravityCore.ConfigData.OrbitPathLineThickness;
                 }
@@ -351,6 +490,12 @@ namespace RealisticGravity
         public Vector3 lVect;
         [ProtoMember(10)]
         public Vector3 sVect;
+        [ProtoMember(11)]
+        public Vector3 eVect;
+        [ProtoMember(12)]
+        public Vector3 planeNormal;
+        [ProtoMember(13)]
+        public float highDetailScaleFactor;
 
         public void CopyData(ref GridGravityDataClient gridData)
         {
@@ -362,6 +507,8 @@ namespace RealisticGravity
             center = gridData.center;
             lVect = gridData.lVect;
             sVect = gridData.sVect;
+            eVect = gridData.eVect;
+            planeNormal = gridData.planeNormal;
             factionId = gridData.factionId;
             bigOwnerId = gridData.bigOwnerId;
 
@@ -372,9 +519,12 @@ namespace RealisticGravity
 
             faction = MyAPIGateway.Session.Factions.TryGetFactionById(factionId);
 
+            double weight = eVect.LengthSquared() * 0.15;
             for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
             {
-                orbitPoints[i] = center + (float)Math.Sin(GridGravityData.angleList[i]) * sVect + (float)Math.Cos(GridGravityData.angleList[i]) * lVect;
+                double theta = -Math.Sin(GridGravityData.angleList[i]) * Math.Sign(Math.Cos(GridGravityData.angleList[i])) * weight + GridGravityData.angleList[i];
+                orbitAngles[i] = (float)theta;
+                orbitPoints[i] = center + (float)Math.Sin(theta) * sVect + (float)Math.Cos(theta) * lVect;
             }
 
             for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
@@ -382,17 +532,10 @@ namespace RealisticGravity
                 orbitMidPoints[i] = (orbitPoints[i] + orbitPoints[(i + 1) % GridGravityData.DIVISIONS]) * 0.5F;
             }
 
-            var character = MyAPIGateway.Session.Player.Character;
-            if (character != null && nearestPlanetData != null)
+            var camera = MyAPIGateway.Session.Camera;
+            if (camera != null && nearestPlanetData != null)
             {
-                Vector3 playerPos = character.GetPosition();
-                Vector3D planetPos = nearestPlanetData.planet.PositionComp.GetPosition();
-                for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
-                {
-                    float dSqr = (orbitMidPoints[i] - playerPos).LengthSquared(), dSqrPlanet = (float)(orbitMidPoints[i] - planetPos).LengthSquared();
-                    orbitPointsFlags[i] = (RealisticGravityCore.showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL || dSqr > nearestPlanetData.minRenderDistSqr) && dSqrPlanet < nearestPlanetData.gravityHeightMaxSqr;
-                    orbitPointsLineThicknesses[i] = ((float)Math.Sqrt(dSqr)) * 0.001F * RealisticGravityCore.ConfigData.OrbitPathLineThickness;
-                }
+                UpdateLineSegmentVisibility(RealisticGravityCore.showPathsToggle);
             }
             else
             {
@@ -413,6 +556,14 @@ namespace RealisticGravity
         private IMyGps gps;
         private IMyFaction faction;
         private Vector4 relationColor;
+
+        private float camDist = float.MaxValue;
+        private bool hasHighDetail;
+        private int firstHighDetailIndex = -1;
+        private int secondHighDetailIndex = -1;
+        private Vector3[] orbitHighDetailPoints = new Vector3[GridGravityData.DIVISIONS * 2 + 1];
+
+        private float[] orbitAngles = new float[GridGravityData.DIVISIONS];
         private Vector3[] orbitPoints = new Vector3[GridGravityData.DIVISIONS];
         private Vector3[] orbitMidPoints = new Vector3[GridGravityData.DIVISIONS];
         private bool[] orbitPointsFlags = new bool[GridGravityData.DIVISIONS];
@@ -469,7 +620,7 @@ namespace RealisticGravity
             }
         }
 
-        public void Update(ref Vector3 playerPos, ref IMyControllableEntity controlledEntity, int showPathsToggle)
+        public void Update(ref Vector3 camPos, ref IMyControllableEntity controlledEntity, int showPathsToggle)
         {
             if (nearestPlanetData == null)
             {
@@ -488,7 +639,7 @@ namespace RealisticGravity
                 position += velocity * MyEngineConstants.PHYSICS_STEP_SIZE_IN_SECONDS;
             }
             
-            bool showPath = showPathsToggle != RealisticGravityCore.HIDE_ORBIT_PATHS && !noShow && (playerPos - nearestPlanetData.planet.PositionComp.GetPosition()).LengthSquared() < RealisticGravityCore.GridOrbitPathMaxDrawDistanceSqr;
+            bool showPath = showPathsToggle != RealisticGravityCore.HIDE_ORBIT_PATHS && !noShow && ((camPos - nearestPlanetData.planet.PositionComp.GetPosition()).Length() - nearestPlanetData.gravityHeightMax) < RealisticGravityCore.ConfigData.GridOrbitPathMaxDrawDistance;
             
             if (RealisticGravityCore.ConfigData.ShowGridOrbitGps && showPath)
             {
@@ -512,37 +663,180 @@ namespace RealisticGravity
                     Vector3 planeNormal = Vector3.Cross(r, v);
                     Vector3 e = Vector3.Cross(v, planeNormal) / mu - Vector3.Normalize(r);
 
-                    float semimajorAxis = -mu / (v.LengthSquared() - (2 * mu / r.Length()));
-                    Vector3 center = nearestPlanetData.planet.PositionComp.GetPosition() - (e * semimajorAxis), lVect = Vector3.Normalize(e) * semimajorAxis, sVect = Vector3.Normalize(Vector3.Cross(lVect, planeNormal)) * (float)Math.Sqrt(semimajorAxis * semimajorAxis * (1 - e.LengthSquared()));
+                    float semimajorAxis = -mu / (v.LengthSquared() - (2 * mu / r.Length())), semiminorAxis = (float)Math.Sqrt(semimajorAxis * semimajorAxis * (1 - e.LengthSquared()));
+                    Vector3 center = nearestPlanetData.planet.PositionComp.GetPosition() - (e * semimajorAxis), lVect = Vector3.Normalize(e) * semimajorAxis, sVect = Vector3.Normalize(Vector3.Cross(lVect, planeNormal)) * semiminorAxis;
 
                     double weight = e.LengthSquared() * 0.15;
                     for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
                     {
+                        //double theta = (float)GridGravityData.angleList[i];
                         double theta = -Math.Sin(GridGravityData.angleList[i]) * Math.Sign(Math.Cos(GridGravityData.angleList[i])) * weight + GridGravityData.angleList[i];
+                        orbitAngles[i] = (float)theta;
                         orbitPoints[i] = center + (float)Math.Sin(theta) * sVect + (float)Math.Cos(theta) * lVect;
                     }
 
+                    grid.Physics.Gravity = Vector3.Normalize(-r) * (float)(nearestPlanetData.gravityConst / r.LengthSquared());
+
+                    eVect = e;
+                    this.planeNormal = Vector3D.Normalize(planeNormal);
+                    this.center = center;
+                    this.lVect = lVect;
+                    this.sVect = sVect;
+                    this.highDetailScaleFactor = (float)Math.Pow(Math.Sqrt(semimajorAxis * semiminorAxis), 0.707) * 4f;
                     UpdateLineSegmentVisibility(showPathsToggle);
                 }
 
                 Vector4 color = isControlled ? RealisticGravityCore.ColorMyOrbitPath : relationColor;
-                for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
+                if (showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL)
                 {
-                    if (orbitPointsFlags[i])
-                        MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % GridGravityData.DIVISIONS], GridGravityData.weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                    if (hasHighDetail)
+                    {
+                        var detailLineThickness = (camDist + highDetailScaleFactor) * 0.001F * RealisticGravityCore.ConfigData.OrbitPathLineThickness;
+                        for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
+                        {
+                            if (i == firstHighDetailIndex)
+                            {
+                                for (int j = 0; j < orbitHighDetailPoints.Length - 1; ++j)
+                                {
+                                    MySimpleObjectDraw.DrawLine(orbitHighDetailPoints[j], orbitHighDetailPoints[j + 1], GridGravityData.weaponLaserId, ref color, detailLineThickness, BlendTypeEnum.PostPP);
+                                }
+                            }
+                            else if (i != secondHighDetailIndex && orbitPointsFlags[i])
+                            {
+                                MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % GridGravityData.DIVISIONS], GridGravityData.weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
+                        {
+                            if (orbitPointsFlags[i])
+                                MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % GridGravityData.DIVISIONS], GridGravityData.weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                        }
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
+                    {
+                        if (orbitPointsFlags[i])
+                            MySimpleObjectDraw.DrawLine(orbitPoints[i], orbitPoints[(i + 1) % GridGravityData.DIVISIONS], GridGravityData.weaponLaserId, ref color, orbitPointsLineThicknesses[i], BlendTypeEnum.PostPP);
+                    }
                 }
             }
         }
 
         public void UpdateLineSegmentVisibility(int showPathsToggle)
         {
-            Vector3 charPos = MyAPIGateway.Session.Player.Character != null ? MyAPIGateway.Session.Player.Character.GetPosition() : Vector3D.Zero;
-            Vector3 planetPos = nearestPlanetData != null ? nearestPlanetData.planet.PositionComp.GetPosition() : Vector3D.Zero;
-            for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
+            if (MyAPIGateway.Session.Camera != null && nearestPlanetData != null)
             {
-                float dSqr = (orbitMidPoints[i] - charPos).LengthSquared(), dSqrPlanet = (orbitMidPoints[i] - planetPos).LengthSquared();
-                orbitPointsFlags[i] = (showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL || dSqr > nearestPlanetData.minRenderDistSqr) && dSqrPlanet < nearestPlanetData.gravityHeightMaxSqr;
-                orbitPointsLineThicknesses[i] = ((float)Math.Sqrt(dSqr)) * 0.001F * RealisticGravityCore.ConfigData.OrbitPathLineThickness;
+                Vector3 camPos = MyAPIGateway.Session.Camera.WorldMatrix.Translation;
+                Vector3 planetPos = nearestPlanetData.planet.PositionComp.GetPosition();
+                for (int i = 0; i < GridGravityData.DIVISIONS; ++i)
+                {
+                    float dSqr = (orbitMidPoints[i] - camPos).LengthSquared(), dSqrPlanet = (orbitMidPoints[i] - planetPos).LengthSquared();
+                    orbitPointsFlags[i] = (showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL || dSqr > nearestPlanetData.minRenderDistSqr) && dSqrPlanet < nearestPlanetData.gravityHeightMaxSqr;
+                    orbitPointsLineThicknesses[i] = ((float)Math.Sqrt(dSqr)) * 0.001F * RealisticGravityCore.ConfigData.OrbitPathLineThickness;
+                }
+
+                bool showPath = showPathsToggle != RealisticGravityCore.HIDE_ORBIT_PATHS && !noShow && ((camPos - planetPos).Length() - nearestPlanetData.gravityHeightMax) < RealisticGravityCore.ConfigData.GridOrbitPathMaxDrawDistance && vSqr > 625F;
+                float angleOffset = 0f;
+                float camDistSqr = float.MaxValue;
+                if (showPath && showPathsToggle == RealisticGravityCore.SHOW_ORBIT_PATHS_FULL)
+                {
+                    var camOffset = Vector3D.Normalize(camPos - center);
+                    float semimajorAxis = (float)lVect.Length(), semiminorAxis = (float)sVect.Length();
+                    Vector3D eNorm = Vector3D.Normalize(eVect);
+
+                    angleOffset = (float)Math.Atan2(camOffset.X * eNorm.Y * planeNormal.Z + eNorm.X * planeNormal.Y * camOffset.Z + planeNormal.X * camOffset.Y * eNorm.Z - camOffset.Z * eNorm.Y * planeNormal.X - eNorm.Z * planeNormal.Y * camOffset.X - planeNormal.Z * camOffset.Y * eNorm.X, Vector3D.Dot(camOffset, eNorm));
+
+                    angleOffset = (float)Math.Atan2(semimajorAxis * Math.Sin(angleOffset), semiminorAxis * Math.Cos(angleOffset));
+
+                    if (angleOffset < 0f) angleOffset += (float)Math.PI * 2;
+
+                    var camNearPt = center + (float)Math.Sin(angleOffset) * sVect + (float)Math.Cos(angleOffset) * lVect;
+
+                    //MathHelpers.DrawSphere(MatrixD.CreateTranslation(camNearPt), (float)(camPos - camNearPt).Length() * 0.01f + 20f, Color.Blue);
+
+                    camDistSqr = (float)(camPos - camNearPt).LengthSquared();
+                    camDist = (float)Math.Sqrt(camDistSqr);
+
+                    //MyAPIGateway.Utilities.ShowNotification($"DIST: {(int)camDistSqr} : {(int)(angleOffset * (180 / Math.PI))} : {eVect.Length()} : {semimajorAxis}", 5);
+
+                    if (float.IsNaN(angleOffset))
+                    {
+                        angleOffset = 0f;
+                        camDistSqr = float.MaxValue;
+                        camDist = float.MaxValue;
+                    }
+                }
+
+                hasHighDetail = showPath && camDistSqr < nearestPlanetData.minRenderDistSqr;
+                firstHighDetailIndex = -1;
+                secondHighDetailIndex = -1;
+                if (hasHighDetail)
+                {
+                    for (int i = 0; i < GridGravityData.DIVISIONS - 1; ++i)
+                    {
+                        if (angleOffset < orbitAngles[i + 1])
+                        {
+                            firstHighDetailIndex = i;
+                            if (angleOffset < (orbitAngles[i] + orbitAngles[i + 1]) * 0.5f)
+                            {
+                                firstHighDetailIndex = (i - 1 + GridGravityData.DIVISIONS) % GridGravityData.DIVISIONS;
+                                secondHighDetailIndex = i;
+                            }
+                            else
+                            {
+                                firstHighDetailIndex = i;
+                                secondHighDetailIndex = (i + 1) % GridGravityData.DIVISIONS;
+                            }
+                            break;
+                        }
+                    }
+
+                    if (firstHighDetailIndex == -1)
+                    {
+                        if (angleOffset > (6.28318f + orbitAngles[GridGravityData.DIVISIONS - 1]) * 0.5f)
+                        {
+                            firstHighDetailIndex = GridGravityData.DIVISIONS - 1;
+                            secondHighDetailIndex = 0;
+                        }
+                        else
+                        {
+                            firstHighDetailIndex = GridGravityData.DIVISIONS - 2;
+                            secondHighDetailIndex = GridGravityData.DIVISIONS - 1;
+                        }
+                    }
+
+                    int thirdHighDetailIndex = (secondHighDetailIndex + 1) % GridGravityData.DIVISIONS;
+                    orbitHighDetailPoints[0] = orbitPoints[firstHighDetailIndex];
+
+                    float firstAngle = orbitAngles[firstHighDetailIndex], secondAngle = orbitAngles[secondHighDetailIndex], thirdAngle = orbitAngles[thirdHighDetailIndex];
+                    if (secondHighDetailIndex == 0)
+                        firstAngle -= MathHelpers.PI_2;
+                    if (thirdHighDetailIndex == 0)
+                        thirdAngle += MathHelpers.PI_2;
+
+                    for (int i = 1; i < GridGravityData.DIVISIONS; ++i)
+                    {
+                        float angle = MathHelpers.MapRange((float)i / GridGravityData.DIVISIONS, 0f, 1f, firstAngle, secondAngle);
+                        orbitHighDetailPoints[i] = center + (float)Math.Sin(angle) * sVect + (float)Math.Cos(angle) * lVect;
+                    }
+
+                    orbitHighDetailPoints[GridGravityData.DIVISIONS] = orbitPoints[secondHighDetailIndex];
+
+                    for (int i = 1; i < GridGravityData.DIVISIONS; ++i)
+                    {
+                        float angle = MathHelpers.MapRange((float)i / GridGravityData.DIVISIONS, 0f, 1f, secondAngle, thirdAngle);
+                        orbitHighDetailPoints[i + GridGravityData.DIVISIONS] = center + (float)Math.Sin(angle) * sVect + (float)Math.Cos(angle) * lVect;
+                    }
+
+                    orbitHighDetailPoints[GridGravityData.DIVISIONS * 2] = orbitPoints[thirdHighDetailIndex];
+
+                    //MyAPIGateway.Utilities.ShowNotification($"DETAIL: {firstHighDetailIndex}/{secondHighDetailIndex}/{thirdHighDetailIndex} {angleOffset} : {orbitAngles[0]} : {orbitAngles[10]} : {orbitAngles[20]}", 5);
+                }
             }
         }
 

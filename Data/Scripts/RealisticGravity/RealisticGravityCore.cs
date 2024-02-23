@@ -137,6 +137,8 @@ namespace RealisticGravity
             SetUpdateOrder(MyUpdateOrder.AfterSimulation);
 
             Instance = this;
+
+            MyAPIGateway.Session.SessionSettings.StopGridsPeriodMin = 0;
         }
 
         private bool initComplete = false;
@@ -232,10 +234,23 @@ namespace RealisticGravity
                 if (updateGridsCtr == 0)
                 {
                     if (MyAPIGateway.Session.Player != null)
+                    {
                         gpsCachedSet = new HashSet<IMyGps>(MyAPIGateway.Session.GPS.GetGpsList(MyAPIGateway.Session.Player.IdentityId));
+                    }
 
+                    HashSet<IMyCubeGrid> controlledGrids = new HashSet<IMyCubeGrid>();
+                    List<IMyPlayer> players = new List<IMyPlayer>();
+                    MyAPIGateway.Players.GetPlayers(players);
+                    foreach (var p in players)
+                    {
+                        if (p.Controller.ControlledEntity is IMyCubeBlock)
+                        {
+                            controlledGrids.Add((p.Controller.ControlledEntity as IMyCubeBlock).CubeGrid);
+                        }
+                    }
+                    
                     HashSet<IMyEntity> grids = new HashSet<IMyEntity>();
-                    MyAPIGateway.Entities.GetEntities(grids, (IMyEntity e) => { return e is IMyCubeGrid && !(e as IMyCubeGrid).IsStatic && (e as IMyCubeGrid).Physics != null && (e as MyCubeGrid).BlocksCount >= 15; });
+                    MyAPIGateway.Entities.GetEntities(grids, (IMyEntity e) => { return e is IMyCubeGrid && !(e as IMyCubeGrid).IsStatic && (e as IMyCubeGrid).Physics != null && ((e as MyCubeGrid).BlocksCount >= 15 || controlledGrids.Contains(e as IMyCubeGrid)); });
 
                     Dictionary<IMyGridTerminalSystem, IMyCubeGrid> gridTerminalSystemDictionary = new Dictionary<IMyGridTerminalSystem, IMyCubeGrid>();
                     Dictionary<IMyGridTerminalSystem, int> gridTerminalSystemBlockCtDictionary = new Dictionary<IMyGridTerminalSystem, int>();
@@ -262,15 +277,15 @@ namespace RealisticGravity
                     }
 
                     grids = new HashSet<IMyEntity>(gridTerminalSystemDictionary.Values);
-                    MyVisualScriptLogicProvider.ShowNotification($"GRIDS: {grids.Count}", 300);
+                    //MyVisualScriptLogicProvider.ShowNotification($"GRIDS: {grids.Count}", 300);
 
                     int num;
                     var toRemoveWhitelist = new HashSet<IMyEntity>(gridDataTable.Keys);
                     foreach (var grid in grids)
                     {
                         PlanetManager.GravityPlanetData planetData = PlanetManager.Instance.GetNearestPlanet(grid.PositionComp.GetPosition(), out num);
-                        MyVisualScriptLogicProvider.ShowNotification($"PLANET: {num}", 3000);
-                        if (planetData != null && num == 1)
+                        //MyVisualScriptLogicProvider.ShowNotification($"PLANET: {num}", 3000);
+                        if (planetData != null && (num == 1 || ConfigData.EnforceSingleGravityWell))
                         {
                             //MyVisualScriptLogicProvider.ShowNotification($"PLANET: {(grid as IMyCubeGrid).CustomName} : {planet}", 300);
                             if (gridDataTable.ContainsKey(grid))
@@ -351,7 +366,7 @@ namespace RealisticGravity
                     int numPlanets;
                     var planet = PlanetManager.Instance.GetNearestPlanet(pos, out numPlanets);
                     //MyVisualScriptLogicProvider.ShowNotification($"{player.Controller.ControlledEntity} : {v.Length()} : {PlanetManager.Instance.planetList.Count} : {numPlanets}", 5);
-                    if (numPlanets > 1)
+                    if (!ConfigData.EnforceSingleGravityWell && numPlanets > 1)
                     {
                         if (showInfo)
                         {
@@ -462,11 +477,13 @@ namespace RealisticGravity
             {
                 // Run Main Server Update
                 GridGravityData.UpdateFlag();
+                Vector3 camPos = (MyAPIGateway.Session.Camera != null ? (Vector3)MyAPIGateway.Session.Camera.WorldMatrix.Translation : pos);
                 foreach (var gridData in gridDataTable.Values)
                 {
                     var clientData = gridDataTableClient[gridData.grid.EntityId];
-                    gridData.Update(ref pos, ref controlledEntity, showPathsToggle, ref clientData);
+                    gridData.Update(ref camPos, ref controlledEntity, showPathsToggle, ref clientData);
                 }
+                //MyAPIGateway.Utilities.ShowNotification($"ZZZ: {gridDataTable.Count}", 5);
 
                 if (GridGravityData.updateFlag)
                 {
@@ -476,8 +493,9 @@ namespace RealisticGravity
             else if (TrackGrids)
             {
                 // Run Main Client Update
+                Vector3 camPos = MyAPIGateway.Session.Camera != null ? pos : (Vector3)MyAPIGateway.Session.Camera.WorldMatrix.Translation;
                 foreach (var gridDataClient in gridDataTableClient.Values)
-                    gridDataClient.Update(ref pos, ref controlledEntity, showPathsToggle);
+                    gridDataClient.Update(ref camPos, ref controlledEntity, showPathsToggle);
             }
         }
 
