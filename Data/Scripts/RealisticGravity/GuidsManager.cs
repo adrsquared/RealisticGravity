@@ -9,6 +9,7 @@ namespace RealisticGravity
 	class GuidsManager
 	{
 		public readonly static Guid STAR_GRAVITY_DATA = new Guid("f6649d92-33f9-4cb4-b38b-69bf19dd3001");
+		public readonly static Guid GAS_GIANT_GRAVITY_DATA = new Guid("d34ff10e-461d-4511-be49-043bae9b7701");
 
 		public static void SetStorageValue(IMyEntity entity, Guid guid, string value)
 		{

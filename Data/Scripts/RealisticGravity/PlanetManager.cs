@@ -66,6 +66,21 @@ namespace RealisticGravity
 						}
 					}
 				}
+
+				val = GuidsManager.GetStorageValue(planet, GuidsManager.GAS_GIANT_GRAVITY_DATA);
+				if (val != null) // Special handling for Gas Giants
+				{
+					//MyLog.Default.WriteLineAndConsole($"DATA: {val}");
+					var tokens = val.Split(',');
+					if (tokens.Length == 3)
+					{
+						float gStr, gFalloff, minHeight;
+						if (float.TryParse(tokens[0], out gStr) && float.TryParse(tokens[1], out gFalloff) && float.TryParse(tokens[2], out minHeight))
+						{
+							SetValues(gStr, gFalloff, minHeight * 0.99f, minHeight);
+						}
+					}
+				}
 			}
 
 			private void SetValues(float gravityStr, float gravityFalloff, float surfHeight, float minHeight)

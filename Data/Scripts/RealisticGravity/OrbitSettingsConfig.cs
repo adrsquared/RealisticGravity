@@ -27,7 +27,7 @@ namespace RealisticGravity
         [ProtoMember(10)]
         public bool ShowGridOrbitPathEnemy = false;
         [ProtoMember(11)]
-        public double GridOrbitPathMaxDrawDistance = 500000;
+        public double GridOrbitPathMaxDrawDistance = 1000000;
         [ProtoMember(12)]
         public bool ShowGridOrbitGps = true;
         [ProtoMember(13)]
